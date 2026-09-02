@@ -9,8 +9,10 @@ from .database import Base, engine, get_db
 from .loaders import load_data_pack
 from .models import AuditEvent, Candidate, CRMSource, Enquiry, ImportWarning
 from .schemas import ApprovalRequest
-from .services import analysis_for, audit, crm_matches, duplicate_matches, route
-from .ai import get_analyzer
+from .services import audit, crm_matches, duplicate_matches, route
+from .ai import TemporaryModelError, get_analyzer
+from .config import MAX_MODEL_RETRIES
+import os
 
 @asynccontextmanager
 async def lifespan(app):
@@ -35,13 +37,21 @@ def import_pack(db:Session=Depends(get_db)):
         e=Enquiry(id=mail.id,from_raw=mail.from_raw,subject=mail.subject,body=mail.body,attachment=mail.attachment,attachment_text=attachment,status='processing')
         db.add(e); db.flush(); audit(db,e.id,'email_ingested',details={'source':'synthetic_data_pack'}); audit(db,e.id,'attachment_loaded' if attachment else ('attachment_missing' if mail.attachment else 'attachment_not_applicable'),details={'attachment':mail.attachment} if mail.attachment else None); audit(db,e.id,'analysis_started',actor='ai_pipeline')
         try:
-            a=get_analyzer().analyze(mail,attachment); e.category=a.category; e.confidence=a.confidence; e.recommended_action=a.recommended_action; e.extracted=a.extracted.model_dump(); e.missing_information=a.missing_information; e.uncertainties=a.uncertainties; e.draft_response=a.draft_response; e.assigned_staff=route(a); e.requires_human_approval=a.category!='junk'; e.status='closed_as_junk' if a.category=='junk' else 'needs_human_review'
+            analyzer=get_analyzer(); a=None
+            for attempt in range(MAX_MODEL_RETRIES+1):
+                try:
+                    a=analyzer.analyze(mail,attachment); break
+                except TemporaryModelError as exc:
+                    if attempt==MAX_MODEL_RETRIES: raise
+                    audit(db,e.id,'analysis_retry','ai_pipeline',{'attempt':attempt+1,'error':str(exc)})
+            if a is None: raise RuntimeError('Analyzer returned no analysis')
+            e.category=a.category; e.confidence=a.confidence; e.recommended_action=a.recommended_action; e.extracted=a.extracted.model_dump(); e.missing_information=a.missing_information; e.uncertainties=a.uncertainties; e.draft_response=a.draft_response; e.assigned_staff=route(a); e.requires_human_approval=a.category!='junk'; e.status='closed_as_junk' if a.category=='junk' else 'needs_human_review'
             audit(db,e.id,'analysis_completed','ai_pipeline',{'category':a.category,'confidence':a.confidence,'recommended_action':a.recommended_action}); audit(db,e.id,'routing_decided',details={'assigned_staff':e.assigned_staff});
             if a.draft_response: audit(db,e.id,'draft_created','ai_pipeline')
             if e.requires_human_approval: audit(db,e.id,'approval_required',details={'reason':'recommendations and any consequential action require human approval'})
             audit(db,e.id,'processing_completed',details={'status':e.status})
         except Exception as exc:
-            e.status='ai_failed'; e.analysis_error=str(exc); e.requires_human_approval=True; audit(db,e.id,'analysis_failed',details={'error':str(exc)}); audit(db,e.id,'approval_required',details={'reason':'analysis failure'})
+            e.status='ai_failed'; e.analysis_error=str(exc); e.requires_human_approval=True; audit(db,e.id,'analysis_failed',details={'error':str(exc)}); audit(db,e.id,'approval_required',details={'reason':'analysis failure'}); audit(db,e.id,'processing_completed',details={'status':'ai_failed'})
     db.commit()
     all_e=list(db.scalars(select(Enquiry))); crm=list(db.scalars(select(CRMSource)))
     for e in all_e:
@@ -80,4 +90,4 @@ def reject(eid:str,payload:ApprovalRequest,db:Session=Depends(get_db)):
     if e.status!='needs_human_review': raise HTTPException(409,'Only enquiries awaiting review may be rejected.')
     e.status='rejected'; audit(db,eid,'human_rejected',payload.reviewer,{'no external action taken':True}); db.commit(); return serial(db,e)
 @app.get('/health')
-def health(): return {'status':'ok','ai_provider':'mock'}
+def health(): return {'status':'ok','ai_provider':os.getenv('AI_PROVIDER','mock').lower().strip()}

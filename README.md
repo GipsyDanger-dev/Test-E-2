@@ -20,7 +20,7 @@ The prototype keeps ambiguity in the analysis adapter and keeps correctness, ide
 
 ## Data Pack
 
-`data/` contains the fictional staff directory, CRM CSV, 12 emails, and three text attachments. The loader preserves raw CRM rows. C002 has fewer fields than its header, is retained, and produces an explicit import warning; no phone is invented.
+`data/` preserves the exact supplied fictional staff directory, CRM CSV, 12 emails, and three text attachments. The loader preserves raw CRM rows. C002 has fewer fields because its phone is missing; its trailing fields are conservatively realigned, retained, and exposed with an import warning.
 
 ## Untrusted Input Policy
 
@@ -28,7 +28,7 @@ All email, attachment, CRM, and staff content is treated only as untrusted data.
 
 ## AI vs Deterministic Logic
 
-The default `mock` adapter supplies one schema-validated analysis for each provided synthetic item, so the demo and tests need no credentials. The adapter boundary is deliberately isolated; `SYSTEM_PROMPT` documents the Gemini-compatible structured-output policy. Matching, duplicate scoring, staff routing, persistence, approval and audit events are deterministic.
+The default local mode uses a deterministic, content-driven mock analyzer so the project can be reviewed without external credentials. It derives classification, extraction, uncertainty, and drafts from the subject, sender, body, and text attachment; it is not an LLM and does not use email IDs. An optional Gemini structured-output adapter is available behind the same interface. AI is reserved for ambiguous reasoning; deterministic application code retains authority over matching, routing, permissions, approval, persistence, and auditability.
 
 ## Classification Categories
 
@@ -56,7 +56,7 @@ The inspector exposes source input and attachment, analysis outcome, scores and 
 
 ## Failure Handling
 
-Raw inputs are persisted before analysis. If the analysis adapter fails, the record is retained, marked `ai_failed`, and an approval-required audit record is created. There are no retries or side effects in the local mock path; a production provider would use the configured bounded retry limit.
+Raw inputs are persisted before analysis. If a provider or schema boundary fails, the record and attachment are retained, marked `ai_failed`, and an approval-required audit record is created with no side effect. Gemini retries only temporary HTTP/network failures and is bounded by `MAX_MODEL_RETRIES` (default 2); invalid credentials, malformed output, and schema errors are not retried.
 
 ## Security
 
@@ -97,12 +97,12 @@ pytest -q
 
 ## AI Tools / Models Used
 
-Python/FastAPI implementation with a credential-free mock structured-analysis adapter. The configuration documents optional Gemini Flash-Lite settings, but no live provider call is made by this build.
+Python/FastAPI implementation with a credential-free deterministic content-driven mock analyzer. The configuration includes an optional Gemini Flash-Lite structured-output adapter, but it has not been live-verified because this repository contains no credentials.
 
 ## Known Weaknesses
 
-Matching heuristics are tuned for this small synthetic pack. The optional Gemini adapter is included but has not been live-verified with credentials. There is no production CRM connector, background worker, binary/PDF attachment parser, vector similarity, or outbound sender. Routing is necessarily limited to the supplied staff.
+The dataset is small and candidate scoring is deterministic. The optional Gemini adapter has not been live-verified with credentials. There is no production CRM connector, outbound sender, background queue, binary/PDF attachment parser, or vector similarity. C002 recovery is a documented heuristic, and staff routing is necessarily limited to the supplied directory.
 
 ## What I Would Improve With Another Day
 
-Migrate to PostgreSQL, add a background queue, richer attachment parsing, an evaluation dataset, a least-privilege CRM sandbox adapter, model telemetry, a feedback loop for corrected classifications, stronger entity resolution, semantic matching only as a secondary candidate signal, observability, and approval role permissions.
+Migrate to PostgreSQL, add a background queue, richer attachment parsing, a model evaluation dataset, a live CRM sandbox, observability, confidence calibration, reviewer correction feedback, stronger entity resolution, semantic matching only as a secondary candidate signal, and role-based approval permissions.

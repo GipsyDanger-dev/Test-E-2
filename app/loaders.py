@@ -13,8 +13,13 @@ def load_data_pack() -> DataPack:
     docs={p.name:p.read_text() for p in (ROOT/'documents').glob('*.txt')}
     lines=(ROOT/'crm.csv').read_text().splitlines(); header=next(csv.reader([lines[0]])); records=[]; warnings=[]; raw={}
     for line in lines[1:]:
-        values=next(csv.reader([line])); data=dict(zip(header,values)); rid=data.get('id','unknown'); raw[rid]=line
-        if len(values)!=len(header):
-            msg='CRM row contains fewer fields than the header.'; warnings.append({'record_id':rid,'type':'column_count_mismatch','severity':'warning','message':msg,'raw_row':line}); data['phone']=None; data['state']=None; data['_uncertain_shift']='row alignment is uncertain; phone was not inferred'
+        values=next(csv.reader([line])); rid=values[0] if values else 'unknown'; raw[rid]=line
+        if len(values)==len(header)-1:
+            # The prescribed malformed C002 row omitted only phone, so realign its trailing values conservatively.
+            data=dict(zip(header[:4],values[:4])); data.update(dict(zip(header[5:],values[4:]))); data['phone']=None
+            msg='CRM row is missing the phone field; trailing fields were realigned conservatively.'; warnings.append({'record_id':rid,'type':'column_count_mismatch','severity':'warning','message':msg,'raw_row':line})
+        else:
+            data=dict(zip(header,values))
+            if len(values)!=len(header): warnings.append({'record_id':rid,'type':'column_count_mismatch','severity':'warning','message':'CRM row contains fewer fields than the header.','raw_row':line})
         records.append(CRMSourceRecord.model_validate({k:v for k,v in data.items() if not k.startswith('_')}))
     return DataPack(staff,records,emails,docs,warnings,raw)

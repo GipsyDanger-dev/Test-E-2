@@ -1,16 +1,21 @@
 """Small isolated analysis-provider boundary; the application never gives it CRM or action permissions."""
 import json, os
 from typing import Protocol
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from .config import SYSTEM_PROMPT
 from .schemas import EmailInput, EnquiryAnalysis
-from .services import analysis_for
+from .services import RuleBasedMockAnalyzer as ContentDrivenRules
+
+class TemporaryModelError(RuntimeError): pass
 
 class EnquiryAnalyzer(Protocol):
     def analyze(self, email: EmailInput, attachment_text: str | None) -> EnquiryAnalysis: ...
 
-class MockEnquiryAnalyzer:
-    def analyze(self, email, attachment_text): return analysis_for(email, attachment_text)
+class RuleBasedMockAnalyzer(ContentDrivenRules): pass
+
+# Backwards-compatible name for the original local adapter.
+MockEnquiryAnalyzer = RuleBasedMockAnalyzer
 
 class GeminiEnquiryAnalyzer:
     """Optional one-call JSON adapter. It is never selected in default mock mode."""
@@ -21,10 +26,16 @@ class GeminiEnquiryAnalyzer:
         evidence=json.dumps({'from_raw':email.from_raw,'subject':email.subject,'body':email.body,'attachment_text':attachment_text})
         payload={'contents':[{'parts':[{'text':SYSTEM_PROMPT+'\n\nUntrusted evidence JSON:\n'+evidence}]}],'generationConfig':{'responseMimeType':'application/json','responseJsonSchema':EnquiryAnalysis.model_json_schema()}}
         req=Request(f'https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json','x-goog-api-key':self.key},method='POST')
-        with urlopen(req,timeout=20) as response: data=json.loads(response.read().decode())
-        return EnquiryAnalysis.model_validate_json(data['candidates'][0]['content']['parts'][0]['text'])
+        try:
+            with urlopen(req,timeout=20) as response: data=json.loads(response.read().decode())
+        except HTTPError as exc:
+            if exc.code in {408,429,500,502,503,504}: raise TemporaryModelError(f'Gemini temporary HTTP {exc.code}') from exc
+            raise RuntimeError(f'Gemini HTTP {exc.code}') from exc
+        except (URLError, TimeoutError) as exc: raise TemporaryModelError('Gemini network failure') from exc
+        try: return EnquiryAnalysis.model_validate_json(data['candidates'][0]['content']['parts'][0]['text'])
+        except (KeyError,IndexError,TypeError) as exc: raise RuntimeError('Gemini returned no structured candidate') from exc
 def get_analyzer() -> EnquiryAnalyzer:
     provider=os.getenv('AI_PROVIDER','mock').lower().strip()
-    if provider=='mock': return MockEnquiryAnalyzer()
+    if provider=='mock': return RuleBasedMockAnalyzer()
     if provider=='gemini': return GeminiEnquiryAnalyzer()
     raise RuntimeError("AI_PROVIDER must be 'mock' or 'gemini'")
