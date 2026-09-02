@@ -1,0 +1,6 @@
+id,company,contact,email,phone,location,region,status,service,state
+C001,Hume Logistics Pty Ltd,Amelia Grant,amelia@hume.example,0400111020,Truganina,VIC,active,solar,open
+C002,Hume Logistics,Amelia Grant,amelia@hume.example,Truganina,VIC,prospect,lighting
+C003,Greenfields Manufacturing,Olivia Green,olivia@greenfields.example,0390012200,Geelong,VIC,active,solar,open
+C004,Northbank College,Melissa Tran,melissa@northbank.example,0391112200,Melbourne,VIC,prospect,lighting,open
+C005,Solara Projects,Daniel Wu,daniel@solara.example,0400333444,Ballarat,VIC,partner,solar,open

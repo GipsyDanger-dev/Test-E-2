@@ -1,0 +1,1 @@
+Greenfields invoice query\nPurchase order: $47,300\nInvoice: $49,940\nDifference: $2,640
