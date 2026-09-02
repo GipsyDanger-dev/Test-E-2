@@ -20,7 +20,7 @@ The prototype keeps ambiguity in the analysis adapter and keeps correctness, ide
 
 ## Data Pack
 
-`data/` preserves the exact supplied fictional staff directory, CRM CSV, 12 emails, and three text attachments. The loader preserves raw CRM rows. C002 has fewer fields because its phone is missing; its trailing fields are conservatively realigned, retained, and exposed with an import warning.
+`data/` preserves the supplied fictional BEDA source inputs, including the original email `from` key. The loader maps that safely to the internal `from_raw` field, preserves raw CRM rows, and conservatively realigns C002's trailing fields because its phone is missing.
 
 ## Untrusted Input Policy
 
@@ -28,7 +28,7 @@ All email, attachment, CRM, and staff content is treated only as untrusted data.
 
 ## AI vs Deterministic Logic
 
-The default local mode uses a deterministic, content-driven mock analyzer so the project can be reviewed without external credentials. It derives classification, extraction, uncertainty, and drafts from the subject, sender, body, and text attachment; it is not an LLM and does not use email IDs. An optional Gemini structured-output adapter is available behind the same interface. AI is reserved for ambiguous reasoning; deterministic application code retains authority over matching, routing, permissions, approval, persistence, and auditability.
+The default local mode uses a deterministic, content-driven mock analyzer so the project can be reviewed without external credentials. It derives classification, extraction, uncertainty, and drafts from the subject, sender, body, and text attachment; it is not an LLM and does not use email IDs. An optional Gemini structured-output adapter is available behind the same interface. AI is reserved for ambiguous reasoning; deterministic application code retains authority over matching, routing, permissions, approval, persistence, and auditability. Fixture counts are separate from team size, unsynchronised CRM-record counts are separate from people counts, and billing-period consumption is separate from annual consumption.
 
 ## Classification Categories
 

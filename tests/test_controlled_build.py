@@ -2,6 +2,8 @@ from fastapi.testclient import TestClient
 from app.database import Base, engine
 from app.loaders import load_data_pack
 from app.main import app
+from app.ai import TemporaryModelError
+from app.schemas import EnquiryAnalysis, ExtractedFacts
 
 def client():
     Base.metadata.drop_all(engine); Base.metadata.create_all(engine)
@@ -17,6 +19,7 @@ def test_exact_input_fidelity_and_safe_c002_recovery():
     assert next(x for x in pack.crm_records if x.id=='C003').company=='Greenfields Foods Pty Ltd'
     assert c002.phone is None and c002.location=='Melbourne VIC' and c002.status=='Lead' and c002.service=='Solar' and c002.state=='New'
     assert '1 July to 31 July 2026' in pack.documents['01_hume_energy_bill.txt']
+    assert '"from"' in open('data/emails.json',encoding='utf-8').read() and '"from_raw"' not in open('data/emails.json',encoding='utf-8').read()
 
 def test_import_idempotency_warning_and_health():
     with client() as c:
@@ -43,11 +46,11 @@ def test_billing_junk_and_other_required_routes():
         e3=c.get('/api/enquiries/E003').json(); e4=c.get('/api/enquiries/E004').json(); e5=c.get('/api/enquiries/E005').json(); e6=c.get('/api/enquiries/E006').json(); e7=c.get('/api/enquiries/E007').json(); e8=c.get('/api/enquiries/E008').json(); e11=c.get('/api/enquiries/E011').json(); e12=c.get('/api/enquiries/E012').json()
         assert e3['extracted']['contact_name']=='Rohan Lee' and e3['extracted']['purchase_order']=='GF PO 8821' and e3['extracted']['discrepancy_value']==2640 and e3['crm_candidates'][0]['id']=='C003'
         assert e4['category']=='junk' and e4['draft_response'] is None
-        assert e5['assigned_staff']=='Zidane Mouldino' and e5['crm_candidates'][0]['id']=='C004' and set(e5['missing_information'])=={'electricity invoice','fixture schedule'}
+        assert e5['assigned_staff']=='Zidane Mouldino' and e5['crm_candidates'][0]['id']=='C004' and set(e5['missing_information'])=={'electricity invoice','fixture schedule'} and e5['extracted']['fixture_count']==1100 and e5['extracted']['team_size'] is None
         assert e6['assigned_staff']=='Ties Rahardjo' and 'No engineer' in e6['uncertainties'][0] and 'THD' in e6['extracted']['service_interest']
         assert e7['assigned_staff']=='Ties Rahardjo' and 'HR' in e7['uncertainties'][0]
-        assert e8['assigned_staff']=='Ties Rahardjo' and e8['crm_candidates'][0]['id']=='C005' and 'not been confirmed' in e8['uncertainties'][0]
-        assert e11['assigned_staff']=='Ali Pratama' and e11['draft_response'] is None and e11['extracted']['team_size']==146
+        assert e8['assigned_staff']=='Ties Rahardjo' and e8['extracted']['contact_name']=='Daniel Wu' and e8['extracted']['company_name'] is None and e8['crm_candidates'][0]['id']=='C005' and 'not been confirmed' in e8['uncertainties'][0]
+        assert e11['assigned_staff']=='Ali Pratama' and e11['draft_response'] is None and e11['extracted']['unsynchronised_record_count']==146 and e11['extracted']['team_size'] is None
         assert e12['assigned_staff']=='Zidane Mouldino' and 'landlord approval' in e12['missing_information'] and 'quote' in e12['uncertainties'][0].lower()
 
 def test_continuation_and_approval_gate():
@@ -55,7 +58,7 @@ def test_continuation_and_approval_gate():
         import_data(c)
         e9=c.get('/api/enquiries/E009').json(); e10=c.get('/api/enquiries/E010').json()
         assert next(x for x in e9['duplicate_candidates'] if x['id']=='E010')['level']=='strong_candidate'
-        assert e10['extracted']['corrected_phone']=='0411 999 102' and e10['extracted']['previous_phone']=='0411 999 120' and e10['requires_human_approval'] is True
+        assert e10['extracted']['corrected_phone']=='0411 999 102' and e10['extracted']['previous_phone']=='0411 999 120' and e10['extracted']['preferred_email']=='sam@harbourcoldstores.example' and e10['extracted']['company_name'] is None and e10['extracted']['contact_name'] is None and e10['requires_human_approval'] is True
         assert c.post('/api/enquiries/E010/approve',json={'reviewer':'Reviewer'}).status_code==200
         assert c.post('/api/enquiries/E010/approve',json={'reviewer':'Reviewer'}).status_code==409
 
@@ -67,3 +70,32 @@ def test_provider_failure_preserves_raw_input(monkeypatch):
         c.post('/api/import'); e=c.get('/api/enquiries/E001').json()
         assert e['status']=='ai_failed' and 'Truganina' in e['body'] and e['attachment_text'] and e['requires_human_approval']
         assert any(a['event_type']=='analysis_failed' for a in c.get('/api/enquiries/E001/audit').json())
+
+def test_temporary_retry_succeeds_within_bound(monkeypatch):
+    class Flaky:
+        calls={}
+        def analyze(self,email,attachment):
+            self.calls[email.id]=self.calls.get(email.id,0)+1
+            if email.id=='E001' and self.calls[email.id]<3: raise TemporaryModelError('temporary')
+            return EnquiryAnalysis(category='junk',confidence=.99,extracted=ExtractedFacts(),recommended_action='archive_junk')
+    flaky=Flaky(); monkeypatch.setattr('app.main.get_analyzer',lambda:flaky)
+    with client() as c:
+        c.post('/api/import'); e=c.get('/api/enquiries/E001').json(); audit=c.get('/api/enquiries/E001/audit').json()
+        assert flaky.calls['E001']==3
+        assert e['status']=='closed_as_junk' and len([x for x in audit if x['event_type']=='analysis_retry'])==2
+
+def test_temporary_retry_exhaustion_is_safe(monkeypatch):
+    class AlwaysTemporary:
+        calls={}
+        def analyze(self,email,*_):
+            self.calls[email.id]=self.calls.get(email.id,0)+1
+            if email.id=='E001': raise TemporaryModelError('temporary')
+            return EnquiryAnalysis(category='junk',confidence=.99,extracted=ExtractedFacts(),recommended_action='archive_junk')
+    analyzer=AlwaysTemporary(); monkeypatch.setattr('app.main.get_analyzer',lambda:analyzer)
+    with client() as c:
+        c.post('/api/import'); e=c.get('/api/enquiries/E001').json(); audit=c.get('/api/enquiries/E001/audit').json()
+        assert analyzer.calls['E001']==3 and e['status']=='ai_failed' and e['attachment_text'] and any(x['event_type']=='analysis_failed' for x in audit)
+
+def test_health_reflects_configured_provider(monkeypatch):
+    monkeypatch.setenv('AI_PROVIDER','gemini')
+    with client() as c: assert c.get('/health').json()=={'status':'ok','ai_provider':'gemini'}
