@@ -64,7 +64,7 @@ The inspector exposes source input and attachment, analysis outcome, scores and 
 
 ## Failure Handling
 
-Raw inputs are persisted before analysis. If a provider or schema boundary fails, the record and attachment are retained, marked `ai_failed`, and an approval-required audit record is created with no side effect. Gemini retries only temporary HTTP/network failures and is bounded by `MAX_MODEL_RETRIES` (default 2); invalid credentials, malformed output, and schema errors are not retried.
+Raw inputs are persisted before analysis. If deterministic rules cannot resolve an item and the model or schema boundary fails, the record and attachment remain preserved. No category or extracted facts are assigned, consequential actions remain blocked, and the item is moved to `needs_human_review` with the failure reason recorded in the audit trail. Gemini retries only temporary HTTP/network failures and is bounded by `MAX_MODEL_RETRIES` (default 2); invalid credentials, malformed output, and schema errors are not retried.
 
 ## Security
 
