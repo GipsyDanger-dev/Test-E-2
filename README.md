@@ -30,9 +30,17 @@ All email, attachment, CRM, and staff content is treated only as untrusted data.
 
 The default local mode uses a deterministic, content-driven mock analyzer so the project can be reviewed without external credentials. It derives classification, extraction, uncertainty, and drafts from the subject, sender, body, and text attachment; it is not an LLM and does not use email IDs. An optional Gemini structured-output adapter is available behind the same interface. AI is reserved for ambiguous reasoning; deterministic application code retains authority over matching, routing, permissions, approval, persistence, and auditability. Fixture counts are separate from team size, unsynchronised CRM-record counts are separate from people counts, and billing-period consumption is separate from annual consumption.
 
+## Deterministic-First Classification
+
+Clear cases are classified by deterministic rules before the model is considered. The model is reserved for genuinely ambiguous classification and extraction.
+
+## Model Unavailable Fallback
+
+If deterministic rules cannot resolve an item and the model is unavailable, the system preserves the raw enquiry, assigns no category or extracted facts, blocks consequential action, and moves it to manual review with an audit trail.
+
 ## Classification Categories
 
-The supported categories are sales opportunity, support, billing, technical, partner coordination, job application, internal alert, contact correction, junk, and unknown. Every imported email has a category, confidence, recommendation, explicit gaps, and uncertainty where applicable.
+The supported categories are sales opportunity, support, billing, technical, partner coordination, job application, internal alert, contact correction, legal/compliance, junk, and unknown. Every deterministically resolved imported email has a category, confidence, recommendation, explicit gaps, and uncertainty where applicable.
 
 ## CRM Matching
 

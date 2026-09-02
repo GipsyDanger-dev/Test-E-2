@@ -1,5 +1,5 @@
 import re
-from .schemas import DuplicateCandidate, EnquiryAnalysis, ExtractedFacts, MatchCandidate
+from .schemas import DuplicateCandidate, EmailInput, EnquiryAnalysis, ExtractedFacts, MatchCandidate
 
 def norm_email(v): return v.lower().strip() if v else None
 def norm_phone(v): return re.sub(r'\D','',v or '') or None
@@ -20,7 +20,10 @@ class RuleBasedMockAnalyzer:
     """Content-driven deterministic analyzer. It never branches on EmailInput.id."""
     def analyze(self,email,attachment_text):
         text=f'{email.subject}\n{email.body}\n{attachment_text or ""}'; lower=text.lower(); f=ExtractedFacts(email=sender_email(email.from_raw),contact_name=sender_name(email.from_raw))
-        def result(category,confidence,action,missing=[],uncertainties=[],draft=None): return EnquiryAnalysis(category=category,confidence=confidence,extracted=f,missing_information=missing,uncertainties=uncertainties,recommended_action=action,draft_response=draft)
+        def result(category,confidence,action,missing=None,uncertainties=None,draft=None): return EnquiryAnalysis(category=category,confidence=confidence,extracted=f,missing_information=missing or [],uncertainties=uncertainties or [],recommended_action=action,draft_response=draft)
+        legal_terms=('legal','regulatory','regulator','compliance','contract','contractual','privacy','data protection','licence','license','liability','terms and conditions','breach')
+        if any(term in lower for term in legal_terms):
+            return result('legal_compliance',.99,'review_legal_compliance',uncertainties=['No legal or regulatory conclusion is made automatically.'])
         if any(x in lower for x in ('ceo leads','cryptocurrency payment','special price expires')): return result('junk',.99,'archive_junk')
         if 'sync job failed' in lower or 'oauth token expired' in lower:
             f.project_type='HubSpot sync job'; f.requested_timeline='failed at 02:14'; f.unsynchronised_record_count=146
@@ -54,9 +57,14 @@ class RuleBasedMockAnalyzer:
             return result('sales_opportunity',.96,'qualify_opportunity',uncertainties=['Potentially related to another Hume enquiry; do not create a separate opportunity without review.'] if 'hume' in lower else [],draft='Thank you. We have received the energy enquiry and will review the opportunity.')
         return result('unknown',.4,'human_review')
 
+def deterministic_analysis(email: EmailInput, attachment_text: str | None) -> EnquiryAnalysis | None:
+    """Resolve only clear content patterns; defer genuinely ambiguous content to the model adapter."""
+    analysis = RuleBasedMockAnalyzer().analyze(email, attachment_text)
+    return None if analysis.category == 'unknown' else analysis
+
 def route(a):
     if a.category=='internal_system_alert': return 'Ali Pratama'
-    if a.category in {'partner_coordination','billing_query','job_application','contact_detail_correction','technical_enquiry'}: return 'Ties Rahardjo'
+    if a.category in {'partner_coordination','billing_query','job_application','contact_detail_correction','technical_enquiry','legal_compliance'}: return 'Ties Rahardjo'
     if a.category=='sales_opportunity': return 'Matt Cooper' if (a.extracted.site_count or 0)>1 or (a.extracted.monthly_energy_cost or 0)>=50000 else 'Zidane Mouldino'
     return None if a.category=='junk' else 'Ties Rahardjo'
 def crm_matches(e,crm):

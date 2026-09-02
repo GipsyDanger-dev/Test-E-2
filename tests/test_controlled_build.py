@@ -1,15 +1,18 @@
 from fastapi.testclient import TestClient
 from app.database import Base, engine
-from app.loaders import load_data_pack
+from app.loaders import DataPack, load_data_pack
 from app.main import app
 from app.ai import TemporaryModelError
-from app.schemas import EnquiryAnalysis, ExtractedFacts
+from app.schemas import EmailInput, EnquiryAnalysis, ExtractedFacts
 
 def client():
     Base.metadata.drop_all(engine); Base.metadata.create_all(engine)
     return TestClient(app)
 
 def import_data(c): assert c.post('/api/import').status_code==200
+def one_email_pack(payload):
+    email=EmailInput.model_validate(payload)
+    return DataPack(staff=[],crm_records=[],emails=[email],documents={},warnings=[],raw_rows={})
 
 def test_exact_input_fidelity_and_safe_c002_recovery():
     pack=load_data_pack(); c002=next(x for x in pack.crm_records if x.id=='C002')
@@ -62,26 +65,41 @@ def test_continuation_and_approval_gate():
         assert c.post('/api/enquiries/E010/approve',json={'reviewer':'Reviewer'}).status_code==200
         assert c.post('/api/enquiries/E010/approve',json={'reviewer':'Reviewer'}).status_code==409
 
-def test_provider_failure_preserves_raw_input(monkeypatch):
+def test_legal_rule_bypasses_model_and_government_incentives_do_not_false_positive(monkeypatch):
+    calls=0
+    class MustNotRun:
+        def analyze(self,*_):
+            nonlocal calls; calls+=1; raise AssertionError('model must not run for clear legal case')
+    monkeypatch.setattr('app.main.get_analyzer',lambda:MustNotRun())
+    monkeypatch.setattr('app.main.load_data_pack',lambda:one_email_pack({'id':'XLEGAL001','from':'partner@example.test','subject':'Contract and regulatory approval question','body':'Before signing the proposed agreement, can you confirm whether this arrangement complies with current regulatory requirements and whether the contract creates any liability for us?','attachment':None}))
+    with client() as c:
+        c.post('/api/import'); e=c.get('/api/enquiries/XLEGAL001').json()
+        assert calls==0 and e['category']=='legal_compliance' and e['recommended_action']=='review_legal_compliance' and e['assigned_staff']=='Ties Rahardjo' and e['requires_human_approval'] is True
+        events=[a['event_type'] for a in c.get('/api/enquiries/XLEGAL001/audit').json()]
+        assert 'deterministic_rule_matched' in events and 'model_analysis_started' not in events
+
+def test_model_outage_preserves_ambiguous_raw_input_without_classification(monkeypatch):
     class Broken:
         def analyze(self,*_): raise ValueError('invalid structured output')
     monkeypatch.setattr('app.main.get_analyzer',lambda:Broken())
+    monkeypatch.setattr('app.main.load_data_pack',lambda:one_email_pack({'id':'XAMB001','from':'alex@example.test','subject':'Question about proposed arrangement','body':'Could someone review this situation and advise who should handle it? I am not sure which team this belongs to.','attachment':None}))
     with client() as c:
-        c.post('/api/import'); e=c.get('/api/enquiries/E001').json()
-        assert e['status']=='ai_failed' and 'Truganina' in e['body'] and e['attachment_text'] and e['requires_human_approval']
-        assert any(a['event_type']=='analysis_failed' for a in c.get('/api/enquiries/E001/audit').json())
+        c.post('/api/import'); e=c.get('/api/enquiries/XAMB001').json(); events=[a['event_type'] for a in c.get('/api/enquiries/XAMB001/audit').json()]
+        assert e['status']=='needs_human_review' and e['category'] is None and e['confidence'] is None and e['extracted']=={} and e['draft_response'] is None and e['recommended_action']=='human_review' and e['assigned_staff']=='Ties Rahardjo' and e['requires_human_approval'] and e['body'].startswith('Could someone')
+        assert {'deterministic_rules_evaluated','no_deterministic_match','model_analysis_started','model_unavailable','manual_review_required'} <= set(events)
 
 def test_temporary_retry_succeeds_within_bound(monkeypatch):
     class Flaky:
         calls={}
         def analyze(self,email,attachment):
             self.calls[email.id]=self.calls.get(email.id,0)+1
-            if email.id=='E001' and self.calls[email.id]<3: raise TemporaryModelError('temporary')
+            if email.id=='XAMB001' and self.calls[email.id]<3: raise TemporaryModelError('temporary')
             return EnquiryAnalysis(category='junk',confidence=.99,extracted=ExtractedFacts(),recommended_action='archive_junk')
     flaky=Flaky(); monkeypatch.setattr('app.main.get_analyzer',lambda:flaky)
+    monkeypatch.setattr('app.main.load_data_pack',lambda:one_email_pack({'id':'XAMB001','from':'alex@example.test','subject':'Question about proposed arrangement','body':'Could someone review this situation and advise who should handle it? I am not sure which team this belongs to.','attachment':None}))
     with client() as c:
-        c.post('/api/import'); e=c.get('/api/enquiries/E001').json(); audit=c.get('/api/enquiries/E001/audit').json()
-        assert flaky.calls['E001']==3
+        c.post('/api/import'); e=c.get('/api/enquiries/XAMB001').json(); audit=c.get('/api/enquiries/XAMB001/audit').json()
+        assert flaky.calls['XAMB001']==3
         assert e['status']=='closed_as_junk' and len([x for x in audit if x['event_type']=='analysis_retry'])==2
 
 def test_temporary_retry_exhaustion_is_safe(monkeypatch):
@@ -89,12 +107,13 @@ def test_temporary_retry_exhaustion_is_safe(monkeypatch):
         calls={}
         def analyze(self,email,*_):
             self.calls[email.id]=self.calls.get(email.id,0)+1
-            if email.id=='E001': raise TemporaryModelError('temporary')
+            if email.id=='XAMB001': raise TemporaryModelError('temporary')
             return EnquiryAnalysis(category='junk',confidence=.99,extracted=ExtractedFacts(),recommended_action='archive_junk')
     analyzer=AlwaysTemporary(); monkeypatch.setattr('app.main.get_analyzer',lambda:analyzer)
+    monkeypatch.setattr('app.main.load_data_pack',lambda:one_email_pack({'id':'XAMB001','from':'alex@example.test','subject':'Question about proposed arrangement','body':'Could someone review this situation and advise who should handle it? I am not sure which team this belongs to.','attachment':None}))
     with client() as c:
-        c.post('/api/import'); e=c.get('/api/enquiries/E001').json(); audit=c.get('/api/enquiries/E001/audit').json()
-        assert analyzer.calls['E001']==3 and e['status']=='ai_failed' and e['attachment_text'] and any(x['event_type']=='analysis_failed' for x in audit)
+        c.post('/api/import'); e=c.get('/api/enquiries/XAMB001').json(); audit=c.get('/api/enquiries/XAMB001/audit').json()
+        assert analyzer.calls['XAMB001']==3 and e['status']=='needs_human_review' and e['category'] is None and e['extracted']=={} and any(x['event_type']=='model_unavailable' for x in audit)
 
 def test_health_reflects_configured_provider(monkeypatch):
     monkeypatch.setenv('AI_PROVIDER','gemini')
